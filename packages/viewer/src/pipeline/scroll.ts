@@ -258,7 +258,7 @@ export function attachScrollSync(options: ScrollSyncOptions): () => void {
           nodeId,
           view !== null
             ? {
-                snap: (x, y) => view.scrollTo({ left: x, top: y, behavior: "auto" }),
+                snap: (x, y) => view.scrollTo({ left: x, top: y, behavior: "instant" }),
                 settleMs: options.doc === rootDoc ? 0 : 500,
               }
             : undefined,

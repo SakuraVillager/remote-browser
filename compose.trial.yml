@@ -1,0 +1,38 @@
+# Trial deployment: total container memory limit = 1536 + 384 = 1920 MiB.
+# /dev/shm and tmpfs usage are included in each container's memory accounting.
+services:
+  browser:
+    entrypoint: ["/usr/bin/dumb-init", "--", "/bin/sh", "/opt/remote-browser/trial-entrypoint.sh"]
+    volumes:
+      - ./deploy/trial-browser-entrypoint.sh:/opt/remote-browser/trial-entrypoint.sh:ro
+    mem_limit: 1536m
+    memswap_limit: 1536m
+    shm_size: 256m
+    tmpfs: !override
+      - /tmp:rw,nosuid,nodev,size=128m,uid=10001,gid=10001,mode=1777
+    logging:
+      driver: json-file
+      options:
+        max-size: 5m
+        max-file: "2"
+  gateway:
+    # Both processes must read/write the same upload/download files.
+    # Upstream images otherwise use different UIDs (browser 10001, gateway 1000).
+    user: "10001:10001"
+    volumes:
+      - type: volume
+        source: runtime-data
+        target: /runtime
+        volume:
+          nocopy: true
+    mem_limit: 384m
+    memswap_limit: 384m
+    tmpfs: !override
+      - /tmp:rw,nosuid,nodev,size=64m,uid=10001,gid=10001,mode=1777
+    environment:
+      NODE_OPTIONS: --max-old-space-size=256
+    logging:
+      driver: json-file
+      options:
+        max-size: 5m
+        max-file: "2"

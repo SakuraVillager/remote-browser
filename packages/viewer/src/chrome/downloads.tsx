@@ -1,7 +1,7 @@
 /** Download UI outside the mirrored document. */
 import type { Down } from "@mirror/protocol";
 
-export type DownloadEntry = Extract<Down, { t: "download" }>;
+export type DownloadEntry = Extract<Down, { t: "download" }> & { autoStarted?: boolean };
 
 export interface DownloadTrayProps {
   downloads: readonly DownloadEntry[];
@@ -91,7 +91,9 @@ function DownloadItem({
       {download.state === "done" && (
         <div class="download-complete">
           <span class="download-status">Complete</span>
-          {download.href === undefined ? (
+          {download.autoStarted ? (
+            <span class="download-status">Sent to your browser</span>
+          ) : download.href === undefined ? (
             <span class="download-preparing">Preparing…</span>
           ) : (
             <a class="download-save" href={download.href} download={download.name}>

@@ -130,13 +130,14 @@ export function createTabLifecycle(opts: TabLifecycleOpts): TabLifecycle {
               url: info?.url ?? "",
               title: info?.title ?? "",
               ...(favicon === undefined ? {} : { favicon }),
-              active: tabId === activeTabId,
+              active: false,
             };
           })(),
         ];
       }),
     );
-    return { t: "tabs", tabs: metadata };
+    // Favicon lookups finish independently; compute active flags together after all await.
+    return { t: "tabs", tabs: metadata.map(tab => ({ ...tab, active: tab.id === activeTabId })) };
   };
 
   const publishTabs = async (version: number): Promise<void> => {

@@ -75,6 +75,67 @@ describe("CSS URL parsing", () => {
   });
 });
 
+describe("SVG sprite references", () => {
+  it("proxies href and xlink:href with visible fragments, preserving local symbols", () => {
+    const rewrite = createRewriteStage(KEY);
+    rewrite(
+      event({
+        type: EventType.Meta,
+        timestamp: 1,
+        data: { href: "https://chatgpt.com/", width: 800, height: 600 },
+      }),
+      CTX,
+    );
+    const result = rewrite(
+      fullSnapshot({
+        type: 2,
+        id: 1,
+        tagName: "svg",
+        attributes: {},
+        childNodes: [
+          { type: 2, id: 2, tagName: "use", attributes: { href: "/cdn/icons.svg#star" } },
+          { type: 2, id: 3, tagName: "use", attributes: { "xlink:href": "/cdn/icons.svg#dot" } },
+          { type: 2, id: 4, tagName: "use", attributes: { href: "#local" } },
+        ],
+      }),
+      CTX,
+    ) as any;
+    const [modern, legacy, local] = result.data.node.childNodes;
+    const modernUrl = modern.attributes.href;
+    const legacyUrl = legacy.attributes["xlink:href"];
+    expect(modernUrl).toMatch(/#star$/);
+    expect(legacyUrl).toMatch(/#dot$/);
+    expect(modernUrl.split("#")[0]).toBe(legacyUrl.split("#")[0]);
+    expect(proxiedRef(modernUrl.split("#")[0]).url).toBe("https://chatgpt.com/cdn/icons.svg");
+    expect(local.attributes.href).toBe("#local");
+    const mutation = rewrite(
+      event({
+        type: EventType.IncrementalSnapshot,
+        timestamp: 30,
+        data: {
+          source: IncrementalSource.Mutation,
+          attributes: [{ id: 2, attributes: { href: "/cdn/icons.svg#dot" } }],
+          adds: [],
+          texts: [],
+          removes: [],
+        },
+      }),
+      CTX,
+    ) as any;
+    expect(mutation.data.attributes[0].attributes.href).toBe(legacyUrl);
+  });
+
+  it("keeps external CSS filter fragments outside the rewritten resource URL", () => {
+    expect(
+      rewriteCssText(
+        'svg{filter:url("/filters.svg#blur")}',
+        () => "/asset/token",
+        "https://page.example/",
+      ),
+    ).toBe('svg{filter:url("/asset/token#blur")}');
+  });
+});
+
 describe("srcset parsing", () => {
   it("keeps commas inside candidate URLs and preserves descriptors and separators", () => {
     const input = "https://img.example/a,b.png?crop=1,2 1x,\n  https://img.example/large.png 2x";

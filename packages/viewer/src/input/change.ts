@@ -16,7 +16,6 @@ import {
 } from "./keys";
 import { isElement, resolvePointerTarget, type SendInput } from "./pointer";
 
-const DEFAULT_TYPING_WINDOW_MS = 1_000;
 const DEFAULT_ORPHAN_WINDOW_MS = 150;
 const DEFAULT_COMPOSING_FLUSH_MS = 500;
 const UNSUPPORTED_INPUT_TYPES = new Set(["button", "file", "hidden", "image", "reset", "submit"]);
@@ -43,7 +42,6 @@ export function attachChangeCapture(options: ChangeCaptureOptions): {
   flush(target: Element): void;
 } {
   const now = options.now ?? Date.now;
-  const typingWindowMs = options.typingWindowMs ?? DEFAULT_TYPING_WINDOW_MS;
   const orphanWindowMs = options.orphanWindowMs ?? DEFAULT_ORPHAN_WINDOW_MS;
   const composingFlushMs = options.composingFlushMs ?? DEFAULT_COMPOSING_FLUSH_MS;
   const schedule = options.setTimer ?? setTimeout;
@@ -135,7 +133,11 @@ export function attachChangeCapture(options: ChangeCaptureOptions): {
       return;
     }
     const lastForwardedAt = forwardedClock.get(resolved.nodeId);
-    if (lastForwardedAt !== undefined && now() - lastForwardedAt < orphanWindowMs) return;
+    // Email fields need their complete native value as well as key events: autofill and
+    // fast typing can otherwise leave a controlled remote login field empty or incomplete.
+    const email = resolved.control.tagName.toLowerCase() === "input" &&
+      (resolved.control as HTMLInputElement).type.toLowerCase() === "email";
+    if (!email && lastForwardedAt !== undefined && now() - lastForwardedAt < orphanWindowMs) return;
     const lastValueAt = valueClock.get(resolved.nodeId);
     if (
       lastValueAt !== undefined &&
@@ -150,14 +152,7 @@ export function attachChangeCapture(options: ChangeCaptureOptions): {
     if (!event.isTrusted) return;
     const resolved = resolveControl(event.target);
     if (resolved === null) return;
-    const lastForwardedAt = forwardedClock.get(resolved.nodeId);
-    if (
-      isEchoField(resolved.control) &&
-      lastForwardedAt !== undefined &&
-      now() - lastForwardedAt < typingWindowMs
-    ) {
-      return;
-    }
+    // A blur/change is a commit boundary, even immediately after the last raw key.
     sendValue(resolved.control, resolved.nodeId, true);
   };
 
@@ -180,10 +175,13 @@ export function attachChangeCapture(options: ChangeCaptureOptions): {
 
   const flush = (target: Element) => {
     const resolved = resolveControl(target);
-    if (resolved === null || !composingNodes.has(resolved.nodeId)) return;
+    if (resolved === null || !isEchoField(resolved.control)) return;
+    const composing = composingNodes.has(resolved.nodeId);
     composingNodes.delete(resolved.nodeId);
     cancelComposeFlush(resolved.nodeId);
-    sendValue(resolved.control, resolved.nodeId);
+    if (composing || lastValues.get(resolved.control) !== resolved.control.value) {
+      sendValue(resolved.control, resolved.nodeId);
+    }
   };
 
   options.doc.addEventListener("input", onInput, true);

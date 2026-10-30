@@ -203,7 +203,7 @@ async function resumeIgnoredTarget(parentSession: CDPSession, sessionId: string)
   }
 }
 
-async function browserHandle(browser: Browser): Promise<BrowserHandle> {
+async function browserHandle(browser: Browser, ownsBrowser = true): Promise<BrowserHandle> {
   try {
     const rootSession = await browser.target().createCDPSession();
     const registry = new TargetRegistry();
@@ -407,12 +407,13 @@ async function browserHandle(browser: Browser): Promise<BrowserHandle> {
         await launchedBrowser.disconnect();
       },
       close() {
-        closePromise ??= launchedBrowser.close();
+        closePromise ??= ownsBrowser ? launchedBrowser.close() : launchedBrowser.disconnect();
         return closePromise;
       },
     };
   } catch (error) {
-    await browser.close().catch(() => undefined);
+    if (ownsBrowser) await browser.close().catch(() => undefined);
+    else await browser.disconnect().catch(() => undefined);
     throw error;
   }
 }
@@ -509,9 +510,12 @@ function mergeCommaSeparatedSwitch(
 }
 
 /** Connect the same raw-CDP BrowserHandle to a remote endpoint (used only by DockerBrowserHost). */
-export async function connectBrowser(browserWSEndpoint: string): Promise<BrowserHandle> {
+export async function connectBrowser(
+  browserWSEndpoint: string,
+  options: { disconnectOnClose?: boolean } = {},
+): Promise<BrowserHandle> {
   const browser = await connect({ browserWSEndpoint, defaultViewport: null });
-  return browserHandle(browser);
+  return browserHandle(browser, !options.disconnectOnClose);
 }
 
 /**

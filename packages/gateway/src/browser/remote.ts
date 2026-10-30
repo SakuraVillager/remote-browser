@@ -37,7 +37,9 @@ export async function connectRemoteBrowser(
     "pollIntervalMs",
   );
   const requestJson = options.requestJson ?? fetchJson;
-  const connect = options.connect ?? connectBrowser;
+  // The separate Chromium service owns its lifecycle. A gateway reload must only
+  // detach CDP, otherwise every reload closes tabs and restarts the browser container.
+  const connect = options.connect ?? ((endpoint: string) => connectBrowser(endpoint, { disconnectOnClose: true }));
   const versionUrl = new URL("json/version", base).href;
   const version = await waitForVersion(versionUrl, requestJson, timeoutMs, pollIntervalMs);
   const endpoint = new URL(version.webSocketDebuggerUrl);

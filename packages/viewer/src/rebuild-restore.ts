@@ -337,12 +337,14 @@ export const interactionRestoreHook: RebuildRestoreHook<InteractionState> = {
       if (document === null || view === null || view === undefined) continue;
       for (const scroll of documentState.elements) {
         const element = resolveElement(scroll.target, document);
-        element?.scrollTo({ left: scroll.left, top: scroll.top, behavior: "auto" });
+        // "auto" follows the site's scroll-behavior CSS. A chat scroller using smooth
+        // behavior would visibly animate from the new iframe's initial zero position.
+        element?.scrollTo({ left: scroll.left, top: scroll.top, behavior: "instant" });
       }
       view.scrollTo({
         left: documentState.scrollX,
         top: documentState.scrollY,
-        behavior: "auto",
+        behavior: "instant",
       });
     }
   },

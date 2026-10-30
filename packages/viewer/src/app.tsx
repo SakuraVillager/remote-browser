@@ -24,6 +24,8 @@ import { createServerClock, DEFAULT_LIVE_BUFFER_MS } from "./clock";
 import { createResyncController, type ResyncTabState, RESYNC_WINDOW_MS } from "./resync";
 import { connectGateway, type GatewayConnectionState, type GatewaySocket } from "./ws";
 import { createFileUploadRelay } from "./uploads";
+import { createTabSelection } from "./tab-selection";
+import { createAutomaticDownloads } from "./chrome/automatic-download";
 import "@rrweb/replay/dist/style.css";
 import "./app.css";
 
@@ -76,6 +78,7 @@ export function App() {
   const mirrorRef = useRef<Mirror | null>(null);
   const pxViewRef = useRef<PxView | null>(null);
   const dismissedDownloadIdsRef = useRef(new Set<string>());
+  const activateTabRef = useRef<((tab: TabId) => void) | null>(null);
   const [connection, setConnection] = useState<GatewayConnectionState>("connecting");
   const [activeTab, setActiveTab] = useState<TabId | null>(null);
   const [tabs, setTabs] = useState<Extract<Down, { t: "tabs" }>["tabs"]>([]);
@@ -100,16 +103,17 @@ export function App() {
     let viewerId: string | null = null;
     let driver = false;
     let sessionId: string | null = null;
-    let currentTab: TabId | null = null;
+    const selection = createTabSelection();
+    const automaticDownloads = createAutomaticDownloads(document);
     let pxView: PxView | null = null;
     let resizeTimer: ReturnType<typeof setTimeout> | null = null;
     const reportViewport = () => {
       resizeTimer = null;
-      if (!driver || currentTab === null) return;
+      if (!driver || selection.current === null) return;
       const w = host.clientWidth;
       const h = host.clientHeight;
       if (w <= 0 || h <= 0) return;
-      socket?.send({ t: "view", tab: currentTab, w, h, dpr: window.devicePixelRatio || 1 });
+      socket?.send({ t: "view", tab: selection.current, w, h, dpr: window.devicePixelRatio || 1 });
     };
     const reportViewportNow = () => {
       if (resizeTimer !== null) clearTimeout(resizeTimer);
@@ -188,9 +192,17 @@ export function App() {
         send: (message) => socket?.send(message),
         onEnterPx: () => mirror.teardown(),
       });
-      if (currentTab !== null) pxView.selectTab(currentTab);
+      if (selection.current !== null) pxView.selectTab(selection.current);
       pxViewRef.current = pxView;
       return pxView;
+    };
+    activateTabRef.current = (tab) => {
+      selection.select(tab);
+      setActiveTab(tab);
+      setTabs((current) => current.map((item) => ({ ...item, active: item.id === tab })));
+      pxView?.selectTab(tab);
+      mirror.selectTab(tab);
+      scheduleViewport(0);
     };
     const resizeObserver = new ResizeObserver(() => {
       mirror.refreshViewportLayout();
@@ -207,6 +219,7 @@ export function App() {
       socketRef.current = null;
       mirrorRef.current = null;
       pxViewRef.current = null;
+      activateTabRef.current = null;
       pxView?.destroy();
       pxView = null;
       resync.dispose();
@@ -257,34 +270,37 @@ export function App() {
           setClipboardError(null);
         }
         if (message.t === "snapshot") {
-          const tabChanged = currentTab !== message.tab;
-          currentTab = message.tab;
-          setActiveTab(message.tab);
+          const previous = selection.current;
+          const selected = selection.snapshot(message.tab);
+          const tabChanged = previous !== selected;
+          setActiveTab(selected);
           if (tabChanged) scheduleViewport(0);
         }
         if (message.t === "chrome") {
           setChromeByTab((current) => ({ ...current, [message.tab]: message }));
-          setActiveTab((current) => current ?? message.tab);
         }
         if (message.t === "mode") {
           setModeByTab((current) => ({ ...current, [message.tab]: message.mode }));
         }
         if (message.t === "tabs") {
-          setTabs(message.tabs);
-          const active = message.tabs.find((tab) => tab.active);
-          if (active !== undefined) {
-            const tabChanged = currentTab !== active.id;
-            currentTab = active.id;
-            setActiveTab(active.id);
-            pxView?.selectTab(active.id);
-            if (mirror.getActiveTab() !== null && mirror.getActiveTab() !== active.id) {
-              mirror.selectTab(active.id);
+          const previous = selection.current;
+          const selected = selection.update(message.tabs);
+          setTabs(message.tabs.map((tab) => ({ ...tab, active: tab.id === selected })));
+          setActiveTab(selected);
+          if (selected !== null) {
+            const tabChanged = previous !== selected;
+            pxView?.selectTab(selected);
+            if (mirror.getActiveTab() !== selected) {
+              mirror.selectTab(selected);
             }
             if (tabChanged) scheduleViewport(0);
           }
         }
-        if (message.t === "download" && !dismissedDownloadIdsRef.current.has(message.id)) {
-          setDownloads((current) => updateDownloads(current, message));
+        if (message.t === "download") {
+          const autoStarted = driver && automaticDownloads.handle(message);
+          if (!dismissedDownloadIdsRef.current.has(message.id)) {
+            setDownloads((current) => updateDownloads(current, { ...message, autoStarted }));
+          }
         }
         if (message.t === "filepick" && driver && sessionId !== null) {
           uploads.handlePick(message, sessionId);
@@ -324,9 +340,7 @@ export function App() {
         tabs={tabs}
         chromeByTab={chromeByTab}
         onActivate={(tab) => {
-          pxViewRef.current?.selectTab(tab);
-          if (modeByTab[tab] !== "px") mirrorRef.current?.selectTab(tab);
-          setActiveTab(tab);
+          activateTabRef.current?.(tab);
         }}
         send={(message) => socketRef.current?.send(message)}
       />

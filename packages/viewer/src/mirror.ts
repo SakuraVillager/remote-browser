@@ -348,7 +348,7 @@ export function createMirror(opts: MirrorOpts): Mirror {
         UNSAFE_replayCanvas: false,
         mouseTail: false,
         // rrweb inserts these rules into the replay document again after every FullSnapshot.
-        // Keep replay cursor chrome visible, but permanently remove it from hit testing.
+        // Hide the recorded cursor; the user's local cursor remains native and responsive.
         insertStyleRules: [REPLAY_CURSOR_PASSTHROUGH_RULE],
         // Old join-buffer deltas are applied synchronously. rrweb's virtual-DOM optimization
         // otherwise waits for a replay Flush event that live addEvent() does not emit.

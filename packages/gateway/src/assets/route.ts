@@ -16,6 +16,7 @@ import type {
 } from "fastify";
 import { lookup as dnsLookup } from "node:dns/promises";
 import { isIP } from "node:net";
+import { validateHeaderName, validateHeaderValue } from "node:http";
 
 import type { AssetCache, CachedAsset } from "./cache";
 import type { AssetFetcher, AssetFetchResponse } from "./fetch";
@@ -210,7 +211,19 @@ function applyResponse(
 ): void {
   reply.code(statusCode);
   for (const [name, value] of Object.entries(headers)) {
-    if (!HOP_BY_HOP_HEADERS.has(name.toLowerCase())) reply.header(name, value);
+    if (HOP_BY_HOP_HEADERS.has(name.toLowerCase())) continue;
+    // CDP headers (including cached ones) may contain newline-joined duplicates or
+    // Unicode values. Fastify defers Node's validation until a stream is sent,
+    // where an invalid header can escape the handler and terminate the gateway.
+    try {
+      validateHeaderName(name);
+      for (const part of Array.isArray(value) ? value : [value]) {
+        validateHeaderValue(name, part);
+      }
+    } catch {
+      continue;
+    }
+    reply.header(name, value);
   }
   // Font bytes are content-addressed by their sealed source URL and can be retained by the
   // browser. Determine this only from the upstream Content-Type; never sniff the token URL.

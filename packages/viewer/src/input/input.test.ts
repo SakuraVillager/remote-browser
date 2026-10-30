@@ -264,7 +264,7 @@ describe("P1 input capture", () => {
     expect(received).toEqual([{ t: "value", tab: "T1", nodeId: 23, value: "second" }]);
   });
 
-  it("forwards checked and multiple-select state without fighting actively typed text", () => {
+  it("reconciles committed text immediately alongside checked and multiple-select state", () => {
     const doc = new FakeDocument();
     const sent: Up[] = [];
     let now = 100;
@@ -308,6 +308,7 @@ describe("P1 input capture", () => {
     ];
     doc.fire("change", { target: multiple, isTrusted: true });
     expect(sent).toEqual([
+      { t: "value", tab: "T1", nodeId: 30, value: "typed" },
       { t: "value", tab: "T1", nodeId: 31, value: "on", checked: true },
       { t: "value", tab: "T1", nodeId: 32, value: "second", checked: true },
       {
@@ -326,6 +327,58 @@ describe("P1 input capture", () => {
     change.dispose();
     expect(doc.listeners.get("change")?.size).toBe(0);
     expect(doc.listeners.get("input")?.size).toBe(0);
+  });
+
+  it("synchronizes the full email while raw keys are still in flight", () => {
+    const doc = new FakeDocument();
+    const input = new FakeElement(51);
+    input.tagName = "INPUT";
+    input.type = "email";
+    const clock = createForwardedInputClock();
+    const sent: Up[] = [];
+    const change = attachChangeCapture({
+      doc: doc as unknown as Document,
+      tab: "T1",
+      getNodeId: (node) => (node as unknown as FakeElement).nodeId,
+      send: (message) => sent.push(message),
+      forwardedClock: clock,
+      now: () => 100,
+    });
+    for (const character of "reader@example.com") {
+      clock.mark(51, 100);
+      input.value += character;
+      doc.fire("input", { target: input, isTrusted: true });
+    }
+    expect(sent.at(-1)).toEqual({
+      t: "value",
+      tab: "T1",
+      nodeId: 51,
+      value: "reader@example.com",
+      commit: false,
+    });
+    doc.fire("change", { target: input, isTrusted: true });
+    expect(sent.at(-1)).toEqual({ t: "value", tab: "T1", nodeId: 51, value: "reader@example.com" });
+    change.dispose();
+  });
+
+  it("flushes native text before Enter even without a composition event", () => {
+    const doc = new FakeDocument();
+    const input = new FakeElement(52);
+    input.tagName = "INPUT";
+    input.value = "reader@example.com";
+    const sent: Up[] = [];
+    const change = attachChangeCapture({
+      doc: doc as unknown as Document,
+      tab: "T1",
+      getNodeId: (node) => (node as unknown as FakeElement).nodeId,
+      send: (message) => sent.push(message),
+    });
+    change.flush(input as unknown as Element);
+    change.flush(input as unknown as Element);
+    expect(sent).toEqual([
+      { t: "value", tab: "T1", nodeId: 52, value: input.value, commit: false },
+    ]);
+    change.dispose();
   });
 
   it("keeps Ctrl/Cmd-C and Ctrl/Cmd-F local through an explicit allowlist", () => {
@@ -584,6 +637,62 @@ describe("P1 input capture", () => {
     expect(sent).toEqual([
       { t: "value", commit: false, tab: "T1", nodeId: 42, value: "漢字" },
       { t: "text", tab: "T1", insert: "編集" },
+    ]);
+  });
+
+  it("forwards contenteditable soft-keyboard text even immediately after a different raw key", () => {
+    const doc = new FakeDocument();
+    const field = new FakeElement(52);
+    field.isContentEditable = true;
+    doc.activeElement = field;
+    const sent: Up[] = [];
+    attachKeyCapture({
+      doc: doc as unknown as Document,
+      tab: "T1",
+      getNodeId: () => 52,
+      send: (message) => sent.push(message),
+      now: () => 1000,
+    });
+    doc.fire("keydown", keyboard(field, "a"));
+    doc.fire("input", { target: field, isTrusted: true, inputType: "insertText", data: "a" });
+    doc.fire("keydown", keyboard(field, "Process", { keyCode: 229 }));
+    doc.fire("input", { target: field, isTrusted: true, inputType: "insertText", data: "中文" });
+    expect(sent.map((message) => message.t)).toEqual(["key", "text"]);
+    expect(sent[1]).toMatchObject({ t: "text", insert: "中文" });
+  });
+
+  it("sends remote IME updates and one commit, suppressing its trailing native input", () => {
+    const doc = new FakeDocument();
+    const field = new FakeElement(53);
+    field.isContentEditable = true;
+    doc.activeElement = field;
+    const sent: Up[] = [];
+    attachKeyCapture({
+      doc: doc as unknown as Document,
+      tab: "T1",
+      getNodeId: () => 53,
+      send: (message) => sent.push(message),
+      now: () => 1000,
+    });
+    doc.fire("compositionstart", { target: field, isTrusted: true, data: "" });
+    doc.fire("compositionupdate", { target: field, isTrusted: true, data: "中文" });
+    doc.fire("input", {
+      target: field,
+      isTrusted: true,
+      isComposing: true,
+      inputType: "insertCompositionText",
+      data: "中文",
+    });
+    doc.fire("compositionend", { target: field, isTrusted: true, data: "中文输入" });
+    doc.fire("input", {
+      target: field,
+      isTrusted: true,
+      inputType: "insertFromComposition",
+      data: "中文输入",
+    });
+    expect(sent).toEqual([
+      { t: "ime", tab: "T1", text: "中文", selStart: 2, selEnd: 2 },
+      { t: "text", tab: "T1", insert: "中文输入" },
     ]);
   });
 

@@ -120,6 +120,13 @@ export function attachKeyCapture(options: KeyCaptureOptions): () => void {
   const now = options.now ?? Date.now;
   let focused: EditableFocus | null = null;
   let enterDown = false;
+  const expectedText = new Map<number, { text: string; at: number }>();
+  const compositions = new Map<Element, string>();
+  const markText = (target: Element, text: string) => {
+    const nodeId = nearestNodeId(target, options.getNodeId);
+    expectedText.set(nodeId, { text, at: now() });
+    options.forwardedClock?.mark(nodeId, now());
+  };
   const notifyFocus = () => {
     const active = deepActiveElement(options.focusRoot ?? options.doc);
     if (!isTextEditable(active)) {
@@ -139,17 +146,28 @@ export function attachKeyCapture(options: KeyCaptureOptions): () => void {
   const onFocusIn = () => notifyFocus();
   const onFocusOut = (event: FocusEvent) => {
     const target = isElement(event.target) ? event.target : focused?.element;
+    if (target !== undefined && compositions.has(target)) {
+      options.send({ t: "text", tab: options.tab, insert: compositions.get(target)! });
+      compositions.delete(target);
+    }
     if (target !== undefined) options.flushComposing?.(target);
     queueMicrotask(notifyFocus);
   };
   const onKey = (event: KeyboardEvent, kind: "down" | "up") => {
-    if (!event.isTrusted || event.isComposing || isLocalShortcut(event)) return;
+    if (
+      !event.isTrusted ||
+      event.isComposing ||
+      event.key === "Process" ||
+      event.keyCode === 229 ||
+      isLocalShortcut(event)
+    )
+      return;
     if (event.key === "Enter") enterDown = kind === "down";
     // A value control pastes locally and sends its resulting value. Forwarding
     // Ctrl/Cmd-V as well can paste the remote browser's unrelated clipboard.
     if (
       isElement(event.target) &&
-      isValueEchoField(event.target) &&
+      isEchoField(event.target) &&
       !event.altKey &&
       (event.ctrlKey || event.metaKey) &&
       event.key.toLowerCase() === "v"
@@ -168,6 +186,15 @@ export function attachKeyCapture(options: KeyCaptureOptions): () => void {
       code: event.code,
       mods: eventMods(event),
     });
+    if (
+      kind === "down" &&
+      target !== undefined &&
+      isContenteditableEchoField(target) &&
+      event.key.length === 1 &&
+      !event.ctrlKey &&
+      !event.metaKey
+    )
+      markText(target, event.key);
     // A key that types nothing on the remote (mobile soft-keyboard "Unidentified"/keyCode-229
     // placeholders resolve to text "" -> no-op dispatch) must NOT poison the forwarded-key clock;
     // otherwise it suppresses change.ts's value-sync — the ONLY lane that carries mobile text to
@@ -229,17 +256,58 @@ export function attachKeyCapture(options: KeyCaptureOptions): () => void {
     if (insert === undefined) return;
     options.send({ t: "text", tab: options.tab, insert });
     if (target !== undefined && isEchoField(target)) {
-      options.forwardedClock?.mark(nearestNodeId(target, options.getNodeId), now());
+      markText(target, insert);
     } else {
       event.preventDefault();
     }
+  };
+  const onCompositionStart = (event: CompositionEvent) => {
+    if (!event.isTrusted || !isElement(event.target) || !isContenteditableEchoField(event.target))
+      return;
+    compositions.set(event.target, event.data);
+  };
+  const onCompositionUpdate = (event: CompositionEvent) => {
+    if (!event.isTrusted || !isElement(event.target) || !isContenteditableEchoField(event.target))
+      return;
+    compositions.set(event.target, event.data);
+    options.send({
+      t: "ime",
+      tab: options.tab,
+      text: event.data,
+      selStart: event.data.length,
+      selEnd: event.data.length,
+    });
   };
   const onCompositionEnd = (event: CompositionEvent) => {
     if (!event.isTrusted || !isElement(event.target) || !isContenteditableEchoField(event.target)) {
       return;
     }
-    options.send({ t: "text", tab: options.tab, insert: event.data });
-    options.forwardedClock?.mark(nearestNodeId(event.target, options.getNodeId), now());
+    compositions.delete(event.target);
+    if (event.data === "")
+      options.send({ t: "ime", tab: options.tab, text: "", selStart: 0, selEnd: 0 });
+    else options.send({ t: "text", tab: options.tab, insert: event.data });
+    markText(event.target, event.data);
+  };
+  const onInput = (event: Event) => {
+    const input = event as InputEvent;
+    if (
+      !input.isTrusted ||
+      input.isComposing ||
+      !isElement(input.target) ||
+      !isContenteditableEchoField(input.target) ||
+      compositions.has(input.target) ||
+      !["insertText", "insertCompositionText", "insertFromComposition"].includes(input.inputType) ||
+      !input.data
+    )
+      return;
+    const nodeId = nearestNodeId(input.target, options.getNodeId);
+    const expected = expectedText.get(nodeId);
+    expectedText.delete(nodeId);
+    if (expected?.text === input.data && now() - expected.at < 1000) return;
+    // Mobile keyboards, IMEs and CDP insertText can produce a native edit with no key event.
+    // Forward its text immediately rather than waiting for blur or an unrelated Enter key.
+    options.send({ t: "text", tab: options.tab, insert: input.data });
+    options.forwardedClock?.mark(nodeId, now());
   };
 
   options.doc.addEventListener("focusin", onFocusIn, true);
@@ -248,7 +316,10 @@ export function attachKeyCapture(options: KeyCaptureOptions): () => void {
   options.doc.addEventListener("keyup", onKeyUp, true);
   options.doc.addEventListener("beforeinput", onBeforeInput, true);
   options.doc.addEventListener("paste", onPaste, true);
+  options.doc.addEventListener("compositionstart", onCompositionStart, true);
+  options.doc.addEventListener("compositionupdate", onCompositionUpdate, true);
   options.doc.addEventListener("compositionend", onCompositionEnd, true);
+  options.doc.addEventListener("input", onInput, true);
   notifyFocus();
   return () => {
     options.doc.removeEventListener("focusin", onFocusIn, true);
@@ -257,7 +328,12 @@ export function attachKeyCapture(options: KeyCaptureOptions): () => void {
     options.doc.removeEventListener("keyup", onKeyUp, true);
     options.doc.removeEventListener("beforeinput", onBeforeInput, true);
     options.doc.removeEventListener("paste", onPaste, true);
+    options.doc.removeEventListener("compositionstart", onCompositionStart, true);
+    options.doc.removeEventListener("compositionupdate", onCompositionUpdate, true);
     options.doc.removeEventListener("compositionend", onCompositionEnd, true);
+    options.doc.removeEventListener("input", onInput, true);
+    expectedText.clear();
+    compositions.clear();
   };
 }
 

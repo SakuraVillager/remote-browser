@@ -14,9 +14,11 @@ class FakeView {
   scrollY = 0;
 
   scrollTo(options: ScrollToOptions) {
+    this.lastScrollBehavior = options.behavior;
     this.scrollX = options.left ?? this.scrollX;
     this.scrollY = options.top ?? this.scrollY;
   }
+  lastScrollBehavior?: ScrollBehavior;
 }
 
 class FakeElement {
@@ -59,9 +61,11 @@ class FakeElement {
   }
 
   scrollTo(options: ScrollToOptions) {
+    this.lastScrollBehavior = options.behavior;
     this.scrollLeft = options.left ?? this.scrollLeft;
     this.scrollTop = options.top ?? this.scrollTop;
   }
+  lastScrollBehavior?: ScrollBehavior;
 }
 
 class FakeDocument {
@@ -142,6 +146,8 @@ describe("synthetic rrweb rebuild interaction restore", () => {
       after.input.selectionDirection,
     ]).toEqual([2, 6, "backward"]);
     expect([after.scroller.scrollLeft, after.scroller.scrollTop]).toEqual([5, 29]);
+    expect(after.scroller.lastScrollBehavior).toBe("instant");
+    expect(after.document.defaultView.lastScrollBehavior).toBe("instant");
     expect([after.document.defaultView.scrollX, after.document.defaultView.scrollY]).toEqual([
       13, 47,
     ]);

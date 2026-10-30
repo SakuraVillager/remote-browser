@@ -290,7 +290,11 @@ function rewriteAttributes(
     )
       continue;
     let rewritten: unknown = original;
-    if (DIRECT_URL_ATTRIBUTES.has(lowerName) && typeof original === "string") {
+    if (
+      (DIRECT_URL_ATTRIBUTES.has(lowerName) ||
+        (lowerName === "href" && (tag === "use" || tag === "image" || tag === "feimage"))) &&
+      typeof original === "string"
+    ) {
       rewritten = rewriteUrlPreservingSpace(
         original,
         (url) => proxyUrl(url, key, ctx),
@@ -514,7 +518,12 @@ function addResolvedReplacement(
   const url = absoluteUrl(candidate, baseUrl);
   if (url === null) return;
   if (!/^(https?:|blob:)/i.test(url)) return;
-  replacements.push({ start, end, value: rewrite(url) });
+  // Fragment identifiers select SVG symbols/filters in the viewer. Sealing the fragment into
+  // the resource token hides it from the browser, so the sprite loads but the icon stays blank.
+  const resource = new URL(url);
+  const fragment = resource.hash;
+  resource.hash = "";
+  replacements.push({ start, end, value: rewrite(resource.href) + fragment });
 }
 
 function rewriteUrlPreservingSpace(

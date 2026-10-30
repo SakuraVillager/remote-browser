@@ -18,6 +18,61 @@ afterEach(async () => {
 });
 
 describe("asset route policy boundary", () => {
+  it.each(["cached", "range"])(
+    "drops invalid upstream headers on a real HTTP socket (%s)",
+    async (lane) => {
+      const app = Fastify();
+      const serverKey = randomBytes(32);
+      const fetch = vi.fn<AssetFetcher["fetch"]>(async () => ({
+        statusCode: lane === "range" ? 206 : 200,
+        headers: {
+          "content-type": "image/webp",
+          "server-timing": "edge;dur=2\norigin;dur=4",
+          "x-unicode": "计时",
+          "bad header": "value",
+          "x-array": ["valid", "invalid\r\nvalue"],
+          "x-valid": ["one", "two"],
+          "x-latin1": "caf\u00e9",
+          "set-cookie": "upstream=private",
+        },
+        body: Readable.from(["asset-body"]),
+        lane: "cdp",
+      }));
+      const dir = await mkdtemp(join(tmpdir(), "mirror-asset-route-test-"));
+      dirs.push(dir);
+      registerAssetRoutes(app, {
+        serverKey,
+        cache: createAssetCache(dir),
+        fetcher: { fetch },
+        lookup: async () => [{ address: "203.0.113.8", family: 4 }],
+      });
+      const token = sealAssetToken(
+        { url: "https://public.example/asset", sessionId: "session-a", tabId: "tab-a" },
+        serverKey,
+      );
+      // inject() alone does not exercise Node's outgoing HTTP header validation.
+      const address = await app.listen({ host: "127.0.0.1", port: 0 });
+      try {
+        for (let i = 0; i < 2; i++) {
+          const response = await globalThis.fetch(`${address}/s/session-a/a/${token}`, {
+            headers: lane === "range" ? { range: "bytes=0-9" } : {},
+          });
+          expect(response.status).toBe(lane === "range" ? 206 : 200);
+          expect(await response.text()).toBe("asset-body");
+          for (const name of ["server-timing", "x-unicode", "x-array", "set-cookie"]) {
+            expect(response.headers.has(name)).toBe(false);
+          }
+          expect(response.headers.get("content-type")).toBe("image/webp");
+          expect(response.headers.get("x-valid")).toBe("one, two");
+          expect(response.headers.get("x-latin1")).toBe("caf\u00e9");
+        }
+        expect(fetch).toHaveBeenCalledTimes(lane === "range" ? 2 : 1);
+      } finally {
+        await app.close();
+      }
+    },
+  );
+
   it("routes browser objects without DNS and rejects unsupported schemes", async () => {
     const lookup = vi.fn(async () => []);
     await rejectPrivateAssetTarget("blob:https://reader.example/object", lookup);
